@@ -1,6 +1,6 @@
 import type * as types from '../types.d.ts'
 import { invalidKeyInput, isCryptoKey, isKeyObject, validateExtractableOption } from './key.js'
-import { encodeBase64, decodeBase64 } from './buffer_utils.js'
+import { concat, encodeBase64, decodeBase64 } from './buffer_utils.js'
 import { JOSENotSupported } from '../util/errors.js'
 import { keyAlgorithm, unsupportedAlg, algArgument } from './key_algorithm.js'
 import type { KeyImportOptions } from '../key/import.js'
@@ -65,7 +65,7 @@ export const toSPKI = (key: unknown): Promise<string> => genericExport('public',
 export const toPKCS8 = (key: unknown): Promise<string> => genericExport('private', 'pkcs8', key)
 
 /** Helper function to compare two byte arrays for equality */
-const bytesEqual = (a: Uint8Array, b: readonly number[]): boolean => {
+const bytesEqual = (a: Uint8Array, b: Uint8Array | readonly number[]): boolean => {
   if (a.byteLength !== b.length) return false
   for (let i = 0; i < a.byteLength; i++) {
     if (a[i] !== b[i]) return false
@@ -185,6 +185,181 @@ const parseECAlgorithmIdentifier = (state: ASN1State): string => {
   throw new Error('Unsupported named curve')
 }
 
+/** Encodes an ASN.1 DER length octet string (short and long form, ITU-T X.690 Section 8.1.3). */
+const encodeLength = (length: number): Uint8Array => {
+  if (length < 0x80) return new Uint8Array([length])
+  const bytes: number[] = []
+  let value = length
+  while (value > 0) {
+    bytes.unshift(value & 0xff)
+    value >>>= 8
+  }
+  return new Uint8Array([0x80 | bytes.length, ...bytes])
+}
+
+/** Wraps DER content in a TLV element with the given universal tag. */
+const tlv = (tag: number, content: Uint8Array): Uint8Array =>
+  concat(new Uint8Array([tag]), encodeLength(content.length), content)
+
+/** Wraps DER content in a SEQUENCE element. */
+const derSequence = (...elements: Uint8Array[]): Uint8Array => tlv(0x30, concat(...elements))
+
+/** Reads a complete TLV element, returning its tag, content and advancing the parse state. */
+const parseElement = (state: ASN1State): { tag: number; content: Uint8Array } => {
+  const tag = readByte(state)
+  const length = parseLength(state)
+  return { tag, content: getSubarray(state, length) }
+}
+
+/** Reads an element and asserts its tag. */
+const expectElement = (state: ASN1State, expectedTag: number, errorMessage: string): Uint8Array => {
+  const { tag, content } = parseElement(state)
+  if (tag !== expectedTag) {
+    throw new Error(errorMessage)
+  }
+  return content
+}
+
+// RFC 5280 Appendix A.1 / RFC 8410 Section 3: AlgorithmIdentifier encodings.
+const OID_EC_PUBLIC_KEY = new Uint8Array([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01])
+const OID_P256 = new Uint8Array([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07])
+const OID_P384 = new Uint8Array([0x2b, 0x81, 0x04, 0x00, 0x22])
+const OID_P521 = new Uint8Array([0x2b, 0x81, 0x04, 0x00, 0x23])
+// RFC 8017 Appendix B: rsaEncryption { iso(1) member-body(2) us(840) rsadsi(113549) 1 1 1 }
+const OID_RSA_ENCRYPTION = new Uint8Array([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01])
+// RFC 5208 Section 5: the PrivateKeyInfo version for v1 (non-attribute) private keys.
+const PKCS8_VERSION_0 = tlv(0x02, new Uint8Array([0x00]))
+
+const algorithmIdentifier = (oid: Uint8Array, parameters?: Uint8Array): Uint8Array =>
+  derSequence(tlv(0x06, oid), parameters ?? new Uint8Array())
+
+/** Maps a SEC1 named curve OID to its JOSE curve name. */
+const curveFromOID = (curveOid: Uint8Array): string => {
+  if (bytesEqual(curveOid, OID_P256)) return 'P-256'
+  if (bytesEqual(curveOid, OID_P384)) return 'P-384'
+  if (bytesEqual(curveOid, OID_P521)) return 'P-521'
+  throw new Error('Unsupported named curve')
+}
+
+/** P-256/P-384/P-521 public keys are uncompressed points of a known length (RFC 5480 2.2). */
+const curveFromPoint = (point: Uint8Array): string => {
+  switch (point.byteLength) {
+    case 65:
+      return 'P-256'
+    case 97:
+      return 'P-384'
+    case 133:
+      return 'P-521'
+    default:
+      throw new Error('Unsupported named curve')
+  }
+}
+
+const curveOID = (crv: string): Uint8Array => {
+  switch (crv) {
+    case 'P-256':
+      return OID_P256
+    case 'P-384':
+      return OID_P384
+    case 'P-521':
+      return OID_P521
+    default:
+      throw new Error('Unsupported named curve')
+  }
+}
+
+/**
+ * Wraps an RFC 8017 RSAPrivateKey (PKCS #1) in an RFC 5208 PrivateKeyInfo (PKCS #8) so it can be
+ * handed to the Web Crypto "pkcs8" importer.
+ */
+const pkcs8FromRSAPrivateKey = (rsaPrivateKey: Uint8Array): Uint8Array =>
+  derSequence(
+    PKCS8_VERSION_0,
+    algorithmIdentifier(OID_RSA_ENCRYPTION, tlv(0x05, new Uint8Array())),
+    tlv(0x04, rsaPrivateKey),
+  )
+
+/**
+ * Wraps an RFC 8017 RSAPublicKey (PKCS #1) in an RFC 5280 SubjectPublicKeyInfo so it can be handed
+ * to the Web Crypto "spki" importer.
+ */
+const spkiFromRSAPublicKey = (rsaPublicKey: Uint8Array): Uint8Array =>
+  derSequence(
+    algorithmIdentifier(OID_RSA_ENCRYPTION, tlv(0x05, new Uint8Array())),
+    // RFC 5280 Section 4.1.2.7: subjectPublicKey is a BIT STRING; the leading 0x00 byte
+    // declares zero unused bits, followed by the DER encoding of the RSAPublicKey.
+    tlv(0x03, concat(new Uint8Array([0x00]), rsaPublicKey)),
+  )
+
+/**
+ * Wraps an RFC 5915 ECPrivateKey (SEC 1) in an RFC 5208 PrivateKeyInfo (PKCS #8). The named curve
+ * comes from the SEC1 parameters field when present, otherwise from the embedded public point.
+ */
+const pkcs8FromECPrivateKey = (ecPrivateKey: Uint8Array): Uint8Array => {
+  const state = createASN1State(ecPrivateKey)
+  const sequence = expectElement(state, 0x30, 'Invalid SEC1 structure')
+  const inner = createASN1State(sequence)
+
+  // version (INTEGER), privateKey (OCTET STRING)
+  expectElement(inner, 0x02, 'Expected version field')
+  expectElement(inner, 0x04, 'Expected private key field')
+
+  let crv: string | undefined
+  let publicPoint: Uint8Array | undefined
+  while (inner.pos < inner.data.length) {
+    const { tag, content } = parseElement(inner)
+    if (tag === 0xa0) {
+      // RFC 5915 Section 3: parameters [0] EXPLICIT, holding the namedCurve OID
+      const parameters = createASN1State(content)
+      crv = curveFromOID(expectElement(parameters, 0x06, 'Expected curve OID'))
+    } else if (tag === 0xa1) {
+      // RFC 5915 Section 3: publicKey [1] EXPLICIT BIT STRING
+      const bitString = createASN1State(content)
+      const pointContent = expectElement(bitString, 0x03, 'Expected public key BIT STRING')
+      if (pointContent[0] !== 0x00) {
+        throw new Error('Expected unused-bits byte 0x00')
+      }
+      publicPoint = pointContent.subarray(1)
+    }
+  }
+
+  if (crv === undefined) {
+    if (!publicPoint) {
+      throw new Error('SEC1 key contains neither curve parameters nor a public key')
+    }
+    crv = curveFromPoint(publicPoint)
+  }
+
+  return derSequence(
+    PKCS8_VERSION_0,
+    algorithmIdentifier(OID_EC_PUBLIC_KEY, tlv(0x06, curveOID(crv))),
+    tlv(0x04, ecPrivateKey),
+  )
+}
+
+/**
+ * Wraps a legacy private or public key container into the SPKI / PKCS #8 structure the Web Crypto
+ * importers accept, throwing {@link JOSENotSupported} (the established key-format error) on any
+ * parse failure.
+ */
+const wrapLegacyKey = (
+  keyData: Uint8Array,
+  legacyFormat: 'pkcs1' | 'sec1',
+  isPublic: boolean,
+): Uint8Array => {
+  try {
+    if (legacyFormat === 'pkcs1') {
+      return isPublic ? spkiFromRSAPublicKey(keyData) : pkcs8FromRSAPrivateKey(keyData)
+    }
+    if (isPublic) {
+      throw new Error('SEC1 only defines an ECPrivateKey structure')
+    }
+    return pkcs8FromECPrivateKey(keyData)
+  } catch (cause) {
+    throw new JOSENotSupported('Invalid or unsupported key format', { cause })
+  }
+}
+
 const genericImport = async (
   keyFormat: 'spki' | 'pkcs8',
   keyData: Uint8Array,
@@ -239,6 +414,23 @@ export const fromPKCS8: PEMImportFunction = (pem, alg, options?) => {
 export const fromSPKI: PEMImportFunction = (pem, alg, options?) => {
   const keyData = processPEMData(pem, /(?:-----(?:BEGIN|END) PUBLIC KEY-----|\s)/g)
   return genericImport('spki', keyData, alg, options)
+}
+
+// RFC 7468 Section 10 labels these legacy containers strictly; they are still produced by the
+// OpenSSL "rsa" and "ec" output modes and other tooling predating PKCS #8.
+export const fromRSAPrivateKey: PEMImportFunction = (pem, alg, options?) => {
+  const keyData = processPEMData(pem, /(?:-----(?:BEGIN|END) RSA PRIVATE KEY-----|\s)/g)
+  return genericImport('pkcs8', wrapLegacyKey(keyData, 'pkcs1', false), alg, options)
+}
+
+export const fromRSAPublicKey: PEMImportFunction = (pem, alg, options?) => {
+  const keyData = processPEMData(pem, /(?:-----(?:BEGIN|END) RSA PUBLIC KEY-----|\s)/g)
+  return genericImport('spki', wrapLegacyKey(keyData, 'pkcs1', true), alg, options)
+}
+
+export const fromECPrivateKey: PEMImportFunction = (pem, alg, options?) => {
+  const keyData = processPEMData(pem, /(?:-----(?:BEGIN|END) EC PRIVATE KEY-----|\s)/g)
+  return genericImport('pkcs8', wrapLegacyKey(keyData, 'sec1', false), alg, options)
 }
 
 /**

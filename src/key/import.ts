@@ -8,7 +8,14 @@
  */
 
 import { decode as decodeBase64URL } from '../util/base64url.js'
-import { fromSPKI, fromPKCS8, fromX509 } from '../lib/asn1.js'
+import {
+  fromSPKI,
+  fromPKCS8,
+  fromX509,
+  fromRSAPrivateKey,
+  fromRSAPublicKey,
+  fromECPrivateKey,
+} from '../lib/asn1.js'
 import { jwkToKey, validateExtractableOption, normalizeJwk } from '../lib/key.js'
 import { keyAlgorithm } from '../lib/key_algorithm.js'
 import { JOSENotSupported } from '../util/errors.js'
@@ -149,6 +156,110 @@ export async function importPKCS8(
     throw new TypeError('"pkcs8" must be PKCS#8 formatted string')
   }
   return fromPKCS8(pkcs8, alg, options)
+}
+
+/**
+ * Imports a PEM-encoded PKCS #1 RSA private key as a {@link !CryptoKey}. The legacy RSAPrivateKey
+ * structure is wrapped in a PKCS #8 PrivateKeyInfo before being imported via the system key import
+ * path.
+ *
+ * > [!NOTE]\
+ * > For RSA keys, use the rsaEncryption OID (1.2.840.113549.1.1.1). The id-RSASSA-PSS OID
+ * > (1.2.840.113549.1.1.10) is not supported by the Web Cryptography API.
+ *
+ * This function is exported (as a named export) from the main `'jose'` module entry point as well
+ * as from its subpath export `'jose/key/import'`.
+ *
+ * @example
+ *
+ * ```js
+ * const pkcs1 = `-----BEGIN RSA PRIVATE KEY-----
+ * MIIEpAIBAAKCAQEA...
+ * -----END RSA PRIVATE KEY-----`
+ * const rsaPrivateKey = await jose.importRSAPrivateKey(pkcs1, 'PS256')
+ * ```
+ *
+ * @param pkcs1 PEM-encoded PKCS #1 RSA private key string (`-----BEGIN RSA PRIVATE KEY-----`)
+ * @param alg JSON Web Algorithm identifier to be used with the imported key. See
+ *   {@link https://github.com/panva/jose/issues/210 Algorithm Key Requirements}.
+ */
+export async function importRSAPrivateKey(
+  pkcs1: string,
+  alg: string,
+  options?: KeyImportOptions,
+): Promise<types.CryptoKey> {
+  if (typeof pkcs1 !== 'string' || pkcs1.indexOf('-----BEGIN RSA PRIVATE KEY-----') !== 0) {
+    throw new TypeError('"pkcs1" must be PKCS#1 formatted string')
+  }
+  return fromRSAPrivateKey(pkcs1, alg, options)
+}
+
+/**
+ * Imports a PEM-encoded PKCS #1 RSA public key as a {@link !CryptoKey}. The legacy RSAPublicKey
+ * structure is wrapped in a SubjectPublicKeyInfo before being imported via the system key import
+ * path.
+ *
+ * > [!NOTE]\
+ * > For RSA keys, use the rsaEncryption OID (1.2.840.113549.1.1.1). The id-RSASSA-PSS OID
+ * > (1.2.840.113549.1.1.10) is not supported by the Web Cryptography API.
+ *
+ * This function is exported (as a named export) from the main `'jose'` module entry point as well
+ * as from its subpath export `'jose/key/import'`.
+ *
+ * @example
+ *
+ * ```js
+ * const pkcs1 = `-----BEGIN RSA PUBLIC KEY-----
+ * MIIBCgKCAQEA...
+ * -----END RSA PUBLIC KEY-----`
+ * const rsaPublicKey = await jose.importRSAPublicKey(pkcs1, 'RS256')
+ * ```
+ *
+ * @param pkcs1 PEM-encoded PKCS #1 RSA public key string (`-----BEGIN RSA PUBLIC KEY-----`)
+ * @param alg JSON Web Algorithm identifier to be used with the imported key. See
+ *   {@link https://github.com/panva/jose/issues/210 Algorithm Key Requirements}.
+ */
+export async function importRSAPublicKey(
+  pkcs1: string,
+  alg: string,
+  options?: KeyImportOptions,
+): Promise<types.CryptoKey> {
+  if (typeof pkcs1 !== 'string' || pkcs1.indexOf('-----BEGIN RSA PUBLIC KEY-----') !== 0) {
+    throw new TypeError('"pkcs1" must be PKCS#1 formatted string')
+  }
+  return fromRSAPublicKey(pkcs1, alg, options)
+}
+
+/**
+ * Imports a PEM-encoded SEC 1 EC private key as a {@link !CryptoKey}. The legacy ECPrivateKey
+ * structure is wrapped in a PKCS #8 PrivateKeyInfo before being imported via the system key import
+ * path.
+ *
+ * This function is exported (as a named export) from the main `'jose'` module entry point as well
+ * as from its subpath export `'jose/key/import'`.
+ *
+ * @example
+ *
+ * ```js
+ * const sec1 = `-----BEGIN EC PRIVATE KEY-----
+ * MHcCAQEE...
+ * -----END EC PRIVATE KEY-----`
+ * const ecPrivateKey = await jose.importECPrivateKey(sec1, 'ES256')
+ * ```
+ *
+ * @param sec1 PEM-encoded SEC 1 EC private key string (`-----BEGIN EC PRIVATE KEY-----`)
+ * @param alg JSON Web Algorithm identifier to be used with the imported key. See
+ *   {@link https://github.com/panva/jose/issues/210 Algorithm Key Requirements}.
+ */
+export async function importECPrivateKey(
+  sec1: string,
+  alg: string,
+  options?: KeyImportOptions,
+): Promise<types.CryptoKey> {
+  if (typeof sec1 !== 'string' || sec1.indexOf('-----BEGIN EC PRIVATE KEY-----') !== 0) {
+    throw new TypeError('"sec1" must be SEC1 formatted string')
+  }
+  return fromECPrivateKey(sec1, alg, options)
 }
 
 /**

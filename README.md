@@ -59,7 +59,10 @@ The `jose` module supports importing, exporting, and generating keys and secrets
   - [JWK Import](docs/key/import/functions/importJWK.md)
   - [Public Key Import (SPKI)](docs/key/import/functions/importSPKI.md)
   - [Public Key Import (X.509 Certificate)](docs/key/import/functions/importX509.md)
+  - [Public Key Import (PKCS #1 RSA)](docs/key/import/functions/importRSAPublicKey.md)
   - [Private Key Import (PKCS #8)](docs/key/import/functions/importPKCS8.md)
+  - [Private Key Import (PKCS #1 RSA)](docs/key/import/functions/importRSAPrivateKey.md)
+  - [Private Key Import (SEC 1 EC)](docs/key/import/functions/importECPrivateKey.md)
 - Key and Secret Generation Functions
   - [Asymmetric Key Pair Generation](docs/key/generate_key_pair/functions/generateKeyPair.md)
   - [Symmetric Secret Generation](docs/key/generate_secret/functions/generateSecret.md)

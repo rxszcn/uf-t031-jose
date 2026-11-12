@@ -49,7 +49,15 @@ export type { UnsecuredResult } from './jwt/unsecured.js'
 
 export { exportPKCS8, exportSPKI, exportJWK } from './key/export.js'
 
-export { importSPKI, importPKCS8, importX509, importJWK } from './key/import.js'
+export {
+  importSPKI,
+  importPKCS8,
+  importX509,
+  importJWK,
+  importRSAPrivateKey,
+  importRSAPublicKey,
+  importECPrivateKey,
+} from './key/import.js'
 export type { KeyImportOptions } from './key/import.js'
 
 export { decodeProtectedHeader } from './util/decode_protected_header.js'
